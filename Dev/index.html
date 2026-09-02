@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>Compêndio Homebrew</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          ink: '#15181D',
+          inksoft: '#1B1F26',
+          surface: '#20252D',
+          surface2: '#262C35',
+          hairline: '#343B46',
+          brass: '#C6A15B',
+          brassdim: '#8A7343',
+          parchment: '#EDE8DC',
+          muted: '#9AA1AC',
+          danger: '#B5654F',
+        },
+        fontFamily: {
+          display: ['Spectral', 'serif'],
+          body: ['Inter', 'sans-serif'],
+        }
+      }
+    }
+  }
+</script>
+<style>
+  html, body { background: #15181D; font-family: 'Inter', sans-serif; }
+  ::selection { background: #C6A15B; color: #15181D; }
+  .font-display { font-family: 'Spectral', serif; }
+  textarea, input { font-family: 'Inter', sans-serif; }
+  .scrollbar-thin::-webkit-scrollbar { width: 6px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: #343B46; border-radius: 3px; }
+  @keyframes sheet-in { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+  .sheet-in { animation: sheet-in 220ms cubic-bezier(.2,.8,.2,1); }
+  .fade-in { animation: fade-in 150ms ease-out; }
+  input:focus-visible, textarea:focus-visible, button:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid #C6A15B; outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sheet-in, .fade-in { animation: none; }
+  }
+</style>
+</head>
+<body class="bg-ink text-parchment min-h-screen">
+
+<div id="app" class="max-w-md mx-auto min-h-screen relative pb-24"></div>
+<div id="modal-root"></div>
+<div id="toast-root" class="fixed bottom-4 left-0 right-0 flex justify-center pointer-events-none z-50"></div>
+
+<script>
+/* ============================= DADOS / PERSISTÊNCIA ============================= */
+
+const COOKIE_NAME = 'rpg_compendio_data';
+const COOKIE_MAX_BYTES = 4093; // margem de segurança abaixo do limite comum de 4096 bytes
+const WARNING_RATIO = 0.75;
+
+function uid(prefix) {
+  return prefix + '_' + Math.random().toString(36).slice(2, 9);
+}
+
+function seedData() {
+  const fDesc = () => ({ id: uid('f'), label: 'Descrição' });
+  const origensDesc = fDesc();
+  const trilhasDesc = fDesc();
+  const trilhasReq = { id: uid('f'), label: 'Requisitos' };
+  const equipDesc = fDesc();
+  const equipCusto = { id: uid('f'), label: 'Custo' };
+  const equipPeso = { id: uid('f'), label: 'Peso' };
+
+  const topics = [
+    { id: 'origens', name: 'Origens', icon: '🕯️', fields: [origensDesc] },
+    { id: 'trilhas', name: 'Trilhas de Classe', icon: '📖', fields: [trilhasDesc, trilhasReq] },
+    { id: 'equipamentos', name: 'Equipamentos', icon: '⚔️', fields: [equipDesc, equipCusto, equipPeso] },
+  ];
+
+  const items = [
+    {
+      id: uid('i'), topicId: 'origens', title: 'Sobrevivente',
+      values: { [origensDesc.id]: 'Escapou de um evento que a maioria não teria sobrevivido. Carrega marcas visíveis do que passou e pesadelos recorrentes, mas aprendeu a manter a calma quando tudo ao redor desmorona.' }
+    },
+    {
+      id: uid('i'), topicId: 'origens', title: 'Pesquisador de Campo',
+      values: { [origensDesc.id]: 'Passou anos catalogando relatos e fenômenos que a ciência oficial prefere ignorar. Tem repertório amplo sobre o incomum, mas pouco preparo para confrontos diretos.' }
+    },
+    {
+      id: uid('i'), topicId: 'trilhas', title: 'Caçador de Sombras',
+      values: {
+        [trilhasDesc.id]: 'Especialista em rastrear e neutralizar ameaças antes que causem dano maior. Prioriza mobilidade e precisão sobre força bruta.',
+        [trilhasReq.id]: 'Nível 3 ou superior; ao menos um treino em Percepção.'
+      }
+    },
+    {
+      id: uid('i'), topicId: 'trilhas', title: 'Médium de Guerra',
+      values: {
+        [trilhasDesc.id]: 'Canaliza presenças para obter vantagem em combate, pagando o preço com o próprio desgaste físico e mental a cada invocação.',
+        [trilhasReq.id]: 'Nível 5 ou superior; origem com afinidade paranormal.'
+      }
+    },
+    {
+      id: uid('i'), topicId: 'equipamentos', title: 'Lanterna Ritualística',
+      values: {
+        [equipDesc.id]: 'Emite uma luz que revela vestígios invisíveis a olho nu por alguns instantes. Requer recarga entre usos.',
+        [equipCusto.id]: '120 créditos',
+        [equipPeso.id]: '0,5 kg'
+      }
+    },
+    {
+      id: uid('i'), topicId: 'equipamentos', title: 'Amuleto de Prata Abençoada',
+      values: {
+        [equipDesc.id]: 'Oferece resistência limitada contra investidas diretas de entidades hostis. Perde o efeito após o uso.',
+        [equipCusto.id]: '300 créditos',
+        [equipPeso.id]: '0,1 kg'
+      }
+    },
+  ];
+
+  return { topics, items };
+}
+
+function readCookieRaw() {
+  const match = document.cookie.match(new RegExp('(?:^|; )' + COOKIE_NAME + '=([^;]*)'));
+  return match ? match[1] : null;
+}
+
+function loadData() {
+  const raw = readCookieRaw();
+  if (!raw) return seedData();
+  try {
+    const parsed = JSON.parse(decodeURIComponent(raw));
+    if (!parsed || !Array.isArray(parsed.topics) || !Array.isArray(parsed.items)) throw new Error('formato inválido');
+    return parsed;
+  } catch (e) {
+    return seedData();
+  }
+}
+
+function cookieByteSize(dataObj) {
+  const json = JSON.stringify(dataObj);
+  const value = encodeURIComponent(json);
+  return new Blob([COOKIE_NAME + '=' + value]).size;
+}
+
+function persist() {
+  const size = cookieByteSize(state.data);
+  if (size > COOKIE_MAX_BYTES) {
+    showToast('Não deu para salvar: limite de armazenamento excedido (' + size + '/' + COOKIE_MAX_BYTES + ' bytes). Remova algum conteúdo antes de continuar.', 'error', 6000);
+    return false;
+  }
+  const value = encodeURIComponent(JSON.stringify(state.data));
+  const expires = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toUTCString();
+  document.cookie = COOKIE_NAME + '=' + value + '; expires=' + expires + '; path=/; SameSite=Lax';
+  if (size > COOKIE_MAX_BYTES * WARNING_RATIO) {
+    showToast('Armazenamento quase no limite (' + size + '/' + COOKIE_MAX_BYTES + ' bytes). Considere reduzir o conteúdo.', 'warning', 5000);
+  }
+  return true;
+}
+
+function resetAllData() {
+  document.cookie = COOKIE_NAME + '=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
+  state.data = { topics: [], items: [] };
+  state.view = 'home';
+  state.modal = null;
+  render();
+  showToast('Dados apagados. A aplicação foi reiniciada do zero.', 'success', 4000);
+}
+
+/* ============================= ESTADO ============================= */
+
+let state = {
+  data: loadData(),
+  view: 'home',        // 'home' | 'topic'
+  currentTopicId: null,
+  modal: null,          // { type, ...props }
+  toast: null,
+  logoTapCount: 0,
+  logoTapTimer: null,
+};
+
+/* ============================= HELPERS DE DADOS ============================= */
+
+function getTopic(id) { return state.data.topics.find(t => t.id === id); }
+function getItemsForTopic(topicId) { return state.data.items.filter(i => i.topicId === topicId); }
+function getItem(id) { return state.data.items.find(i => i.id === id); }
+
+const ICON_CHOICES = ['⚔️','🛡️','🧪','📜','🎲','👤','🏰','🔮','💰','🗺️','🕯️','☠️','🧿','📖','🩸','⚙️'];
+
+function escapeHtml(str) {
+  return (str || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+function nl2br(str) {
+  return escapeHtml(str).replace(/\n/g, '<br>');
+}
+
+/* ============================= TOAST ============================= */
+
+function showToast(message, type, duration) {
+  state.toast = { message, type: type || 'success', id: uid('t') };
+  renderToast();
+  const myId = state.toast.id;
+  setTimeout(() => {
+    if (state.toast && state.toast.id === myId) {
+      state.toast = null;
+      renderToast();
+    }
+  }, duration || 3500);
+}
+
+function renderToast() {
+  const root = document.getElementById('toast-root');
+  if (!state.toast) { root.innerHTML = ''; return; }
+  const colors = {
+    success: 'bg-surface2 border-brass text-parchment',
+    warning: 'bg-surface2 border-brass text-brass',
+    error: 'bg-surface2 border-danger text-danger',
+  };
+  root.innerHTML = `
+    <div class="pointer-events-auto fade-in mx-4 max-w-sm border ${colors[state.toast.type]} rounded px-4 py-3 text-sm shadow-lg">
+      ${escapeHtml(state.toast.message)}
+    </div>`;
+}
+
+/* ============================= RENDER: HOME ============================= */
+
+function renderHome() {
+  const topics = state.data.topics;
+  return `
+    <header class="px-5 pt-8 pb-6">
+      <h1 id="app-logo" data-action="logo-tap" class="font-display text-3xl text-parchment tracking-wide select-none cursor-default">Compêndio</h1>
+      <p class="text-muted text-sm mt-1">Conteúdo homebrew organizado por tópico.</p>
+    </header>
+    <main class="px-5">
+      ${topics.length === 0 ? `
+        <div class="border border-hairline rounded-md px-5 py-10 text-center text-muted">
+          <p class="mb-3">Nenhum tópico criado ainda.</p>
+          <button data-action="open-topics-manager" class="text-brass border border-brass rounded px-4 py-2 text-sm">Criar o primeiro tópico</button>
+        </div>
+      ` : `
+        <div class="grid grid-cols-2 gap-3">
+          ${topics.map(t => `
+            <button data-action="open-topic" data-id="${t.id}"
+              class="group flex flex-col items-center justify-center gap-2 bg-surface border border-hairline rounded-md py-6 px-3 active:border-brass transition-colors">
+              <span class="text-3xl">${t.icon}</span>
+              <span class="text-sm text-parchment text-center leading-tight">${escapeHtml(t.name)}</span>
+              <span class="text-xs text-muted">${getItemsForTopic(t.id).length} ${getItemsForTopic(t.id).length === 1 ? 'item' : 'itens'}</span>
+            </button>
+          `).join('')}
+        </div>
+      `}
+    </main>
+    <button data-action="open-topics-manager"
+      class="fixed bottom-6 right-6 w-14 h-14 rounded-full bg-brass text-ink text-2xl shadow-lg flex items-center justify-center active:scale-95 transition-transform"
+      aria-label="Gerenciar tópicos">✎</button>
+  `;
+}
+
+/* ============================= RENDER: TOPIC (lista de itens) ============================= */
+
+function renderTopicView() {
+  const topic = getTopic(state.currentTopicId);
+  if (!topic) { state.view = 'home'; return renderHome(); }
+  const items = getItemsForTopic(topic.id);
+  const firstFieldId = topic.fields[0] ? topic.fields[0].id : null;
+
+  return `
+    <header class="px-5 pt-6 pb-4 flex items-center gap-3 sticky top-0 bg-ink/95 backdrop-blur z-10 border-b border-hairline">
+      <button data-action="back-home" class="text-brass text-xl px-1" aria-label="Voltar">‹</button>
+      <span class="text-2xl">${topic.icon}</span>
+      <h1 class="font-display text-xl text-parchment flex-1 truncate">${escapeHtml(topic.name)}</h1>
+      <button data-action="open-item-form-new" data-topic-id="${topic.id}"
+        class="text-brass border border-brass rounded px-3 py-1.5 text-sm shrink-0">+ Item</button>
+    </header>
+    <main class="px-5 pt-4">
+      ${items.length === 0 ? `
+        <div class="border border-hairline rounded-md px-5 py-10 text-center text-muted">
+          <p>Nenhum item neste tópico ainda.</p>
+        </div>
+      ` : `
+        <ul class="flex flex-col gap-2">
+          ${items.map(item => {
+            const preview = firstFieldId ? (item.values[firstFieldId] || '') : '';
+            return `
+            <li>
+              <button data-action="open-item" data-id="${item.id}"
+                class="w-full text-left bg-surface border-l-2 border-brassdim rounded-r-md px-4 py-3 active:border-brass transition-colors">
+                <p class="text-parchment font-medium">${escapeHtml(item.title)}</p>
+                ${preview ? `<p class="text-muted text-sm mt-1 line-clamp-2">${escapeHtml(preview)}</p>` : ''}
+              </button>
+            </li>`;
+          }).join('')}
+        </ul>
+      `}
+    </main>
+  `;
+}
+
+/* ============================= RENDER RAIZ ============================= */
+
+function render() {
+  const app = document.getElementById('app');
+  app.innerHTML = state.view === 'topic' ? renderTopicView() : renderHome();
+  renderModal();
+  renderToast();
+}
+
+/* ============================= MODAL: DETALHE DE ITEM ============================= */
+
+function modalItemDetail(itemId) {
+  const item = getItem(itemId);
+  const topic = getTopic(item.topicId);
+  return `
+    <div class="fixed inset-0 z-40">
+      <div class="absolute inset-0 bg-black/60 fade-in" data-action="close-modal"></div>
+      <div class="absolute inset-x-0 bottom-0 sheet-in max-w-md mx-auto bg-inksoft border-t border-hairline rounded-t-xl max-h-[88vh] flex flex-col">
+        <div class="px-5 pt-4 pb-3 border-b border-hairline flex items-start gap-3">
+          <span class="text-2xl mt-0.5">${topic.icon}</span>
+          <div class="flex-1 min-w-0">
+            <p class="text-xs text-muted">${escapeHtml(topic.name)}</p>
+            <h2 class="font-display text-xl text-parchment leading-snug">${escapeHtml(item.title)}</h2>
+          </div>
+          <button data-action="close-modal" class="text-muted text-2xl leading-none px-1" aria-label="Fechar">×</button>
+        </div>
+        <div class="px-5 py-4 overflow-y-auto scrollbar-thin flex-1">
+          ${topic.fields.map(f => `
+            <div class="mb-4">
+              <p class="text-xs text-brass mb-1">${escapeHtml(f.label)}</p>
+              <p class="text-parchment text-sm leading-relaxed whitespace-pre-wrap">${item.values[f.id] ? nl2br(item.values[f.id]) : '<span class="text-muted">Não preenchido.</span>'}</p>
+            </div>
+          `).join('')}
+        </div>
+        <div class="px-5 py-3 border-t border-hairline flex gap-2">
+          <button data-action="open-item-form-edit" data-id="${item.id}"
+            class="flex-1 bg-brass text-ink rounded px-4 py-2.5 text-sm font-medium">Editar</button>
+          <button data-action="delete-item" data-id="${item.id}"
+            class="border border-danger text-danger rounded px-4 py-2.5 text-sm">Excluir</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ============================= MODAL: FORMULÁRIO DE ITEM ============================= */
+
+function modalItemForm(topicId, itemId) {
+  const topic = getTopic(topicId);
+  const item = itemId ? getItem(itemId) : null;
+  const isEdit = !!item;
+  return `
+    <div class="fixed inset-0 z-40">
+      <div class="absolute inset-0 bg-black/60 fade-in" data-action="close-modal"></div>
+      <div class="absolute inset-x-0 bottom-0 sheet-in max-w-md mx-auto bg-inksoft border-t border-hairline rounded-t-xl max-h-[88vh] flex flex-col">
+        <div class="px-5 pt-4 pb-3 border-b border-hairline flex items-center gap-3">
+          <h2 class="font-display text-xl text-parchment flex-1">${isEdit ? 'Editar item' : 'Novo item'} · ${topic.icon} ${escapeHtml(topic.name)}</h2>
+          <button data-action="close-modal" class="text-muted text-2xl leading-none px-1" aria-label="Fechar">×</button>
+        </div>
+        <form id="item-form" data-topic-id="${topic.id}" ${isEdit ? `data-item-id="${item.id}"` : ''} class="px-5 py-4 overflow-y-auto scrollbar-thin flex-1 flex flex-col gap-4">
+          <div>
+            <label class="text-xs text-brass block mb-1">Nome</label>
+            <input name="title" type="text" required maxlength="80" value="${escapeHtml(isEdit ? item.title : '')}"
+              class="w-full bg-surface border border-hairline rounded px-3 py-2 text-parchment text-sm focus:border-brass" />
+          </div>
+          ${topic.fields.map(f => `
+            <div>
+              <label class="text-xs text-brass block mb-1">${escapeHtml(f.label)}</label>
+              <textarea name="field_${f.id}" rows="3" maxlength="1200"
+                class="w-full bg-surface border border-hairline rounded px-3 py-2 text-parchment text-sm focus:border-brass">${isEdit ? escapeHtml(item.values[f.id] || '') : ''}</textarea>
+            </div>
+          `).join('')}
+        </form>
+        <div class="px-5 py-3 border-t border-hairline flex gap-2">
+          <button type="submit" form="item-form" class="flex-1 bg-brass text-ink rounded px-4 py-2.5 text-sm font-medium">Salvar item</button>
+          <button data-action="close-modal" class="border border-hairline text-muted rounded px-4 py-2.5 text-sm">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ============================= MODAL: GERENCIADOR DE TÓPICOS ============================= */
+
+function modalTopicsManager() {
+  const topics = state.data.topics;
+  const size = cookieByteSize(state.data);
+  const pct = Math.min(100, Math.round((size / COOKIE_MAX_BYTES) * 100));
+  return `
+    <div class="fixed inset-0 z-40">
+      <div class="absolute inset-0 bg-black/60 fade-in" data-action="close-modal"></div>
+      <div class="absolute inset-x-0 bottom-0 sheet-in max-w-md mx-auto bg-inksoft border-t border-hairline rounded-t-xl max-h-[88vh] flex flex-col">
+        <div class="px-5 pt-4 pb-3 border-b border-hairline flex items-center gap-3">
+          <h2 class="font-display text-xl text-parchment flex-1">Gerenciar tópicos</h2>
+          <button data-action="close-modal" class="text-muted text-2xl leading-none px-1" aria-label="Fechar">×</button>
+        </div>
+        <div class="px-5 py-4 overflow-y-auto scrollbar-thin flex-1">
+          <button data-action="open-topic-form-new" class="w-full mb-4 border border-brass text-brass rounded px-4 py-2.5 text-sm">+ Novo tópico</button>
+          ${topics.length === 0 ? `<p class="text-muted text-sm text-center py-6">Nenhum tópico criado.</p>` : `
+            <ul class="flex flex-col gap-2">
+              ${topics.map(t => `
+                <li class="flex items-center gap-3 bg-surface border border-hairline rounded-md px-3 py-2.5">
+                  <span class="text-xl">${t.icon}</span>
+                  <div class="flex-1 min-w-0">
+                    <p class="text-parchment text-sm truncate">${escapeHtml(t.name)}</p>
+                    <p class="text-muted text-xs">${t.fields.length} campo${t.fields.length === 1 ? '' : 's'} · ${getItemsForTopic(t.id).length} item(ns)</p>
+                  </div>
+                  <button data-action="open-topic-form-edit" data-id="${t.id}" class="text-brass text-sm px-2 py-1" aria-label="Editar tópico">✎</button>
+                  <button data-action="delete-topic" data-id="${t.id}" class="text-danger text-sm px-2 py-1" aria-label="Excluir tópico">✕</button>
+                </li>
+              `).join('')}
+            </ul>
+          `}
+        </div>
+        <div class="px-5 py-3 border-t border-hairline">
+          <div class="flex justify-between text-xs text-muted mb-1">
+            <span>Armazenamento (cookie)</span>
+            <span>${size} / ${COOKIE_MAX_BYTES} bytes</span>
+          </div>
+          <div class="h-1.5 bg-surface rounded-full overflow-hidden">
+            <div class="h-full ${pct > 90 ? 'bg-danger' : pct > 75 ? 'bg-brass' : 'bg-brassdim'}" style="width:${pct}%"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ============================= MODAL: FORMULÁRIO DE TÓPICO ============================= */
+
+function modalTopicForm(topicId) {
+  const existing = topicId ? getTopic(topicId) : null;
+  const draft = existing
+    ? { id: existing.id, name: existing.name, icon: existing.icon, fields: existing.fields.map(f => ({ ...f })) }
+    : { id: null, name: '', icon: ICON_CHOICES[0], fields: [{ id: uid('f'), label: 'Descrição' }] };
+  state.modal.draft = draft;
+  return renderTopicFormModal(draft, !!existing);
+}
+
+function renderTopicFormModal(draft, isEdit) {
+  return `
+    <div class="fixed inset-0 z-40">
+      <div class="absolute inset-0 bg-black/60 fade-in" data-action="close-modal"></div>
+      <div class="absolute inset-x-0 bottom-0 sheet-in max-w-md mx-auto bg-inksoft border-t border-hairline rounded-t-xl max-h-[88vh] flex flex-col">
+        <div class="px-5 pt-4 pb-3 border-b border-hairline flex items-center gap-3">
+          <h2 class="font-display text-xl text-parchment flex-1">${isEdit ? 'Editar tópico' : 'Novo tópico'}</h2>
+          <button data-action="close-modal" class="text-muted text-2xl leading-none px-1" aria-label="Fechar">×</button>
+        </div>
+        <form id="topic-form" class="px-5 py-4 overflow-y-auto scrollbar-thin flex-1 flex flex-col gap-4">
+          <div>
+            <label class="text-xs text-brass block mb-1">Nome do tópico</label>
+            <input name="name" type="text" required maxlength="40" value="${escapeHtml(draft.name)}"
+              class="w-full bg-surface border border-hairline rounded px-3 py-2 text-parchment text-sm focus:border-brass" />
+          </div>
+          <div>
+            <label class="text-xs text-brass block mb-2">Ícone</label>
+            <div class="grid grid-cols-8 gap-2">
+              ${ICON_CHOICES.map(ic => `
+                <button type="button" data-action="select-icon" data-icon="${ic}"
+                  class="icon-choice text-xl rounded border ${draft.icon === ic ? 'border-brass bg-surface2' : 'border-hairline bg-surface'} py-1.5">${ic}</button>
+              `).join('')}
+            </div>
+          </div>
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <label class="text-xs text-brass block">Campos do item</label>
+              <button type="button" data-action="add-field-row" class="text-brass text-xs border border-brass rounded px-2 py-1">+ Campo</button>
+            </div>
+            <div class="flex flex-col gap-2">
+              ${draft.fields.map(f => `
+                <div class="flex items-center gap-2 field-row" data-field-id="${f.id}">
+                  <input type="text" value="${escapeHtml(f.label)}" maxlength="30" placeholder="Nome do campo"
+                    class="field-label-input flex-1 bg-surface border border-hairline rounded px-3 py-2 text-parchment text-sm focus:border-brass" />
+                  ${draft.fields.length > 1 ? `<button type="button" data-action="remove-field-row" data-field-id="${f.id}" class="text-danger px-2" aria-label="Remover campo">✕</button>` : ''}
+                </div>
+              `).join('')}
+            </div>
+            <p class="text-muted text-xs mt-2">Esses campos aparecem no formulário de cada item deste tópico (ex.: Descrição, Custo, Requisitos).</p>
+          </div>
+        </form>
+        <div class="px-5 py-3 border-t border-hairline flex gap-2">
+          <button type="submit" form="topic-form" data-action="submit-topic-form" class="flex-1 bg-brass text-ink rounded px-4 py-2.5 text-sm font-medium">Salvar tópico</button>
+          <button data-action="close-modal" class="border border-hairline text-muted rounded px-4 py-2.5 text-sm">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ============================= MODAL: CONFIRMAÇÃO ============================= */
+
+function modalConfirm(message, confirmLabel) {
+  return `
+    <div class="fixed inset-0 z-50">
+      <div class="absolute inset-0 bg-black/70 fade-in"></div>
+      <div class="absolute inset-0 flex items-center justify-center px-6">
+        <div class="fade-in max-w-sm w-full bg-inksoft border border-hairline rounded-lg p-5">
+          <p class="text-parchment text-sm leading-relaxed mb-5">${message}</p>
+          <div class="flex gap-2">
+            <button data-action="confirm-yes" class="flex-1 bg-danger text-ink rounded px-4 py-2.5 text-sm font-medium">${confirmLabel || 'Confirmar'}</button>
+            <button data-action="confirm-no" class="border border-hairline text-muted rounded px-4 py-2.5 text-sm">Cancelar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ============================= RENDER MODAL (dispatch) ============================= */
+
+function renderModal() {
+  const root = document.getElementById('modal-root');
+  if (!state.modal) { root.innerHTML = ''; return; }
+  switch (state.modal.type) {
+    case 'itemDetail': root.innerHTML = modalItemDetail(state.modal.itemId); break;
+    case 'itemForm': root.innerHTML = modalItemForm(state.modal.topicId, state.modal.itemId); break;
+    case 'topicsManager': root.innerHTML = modalTopicsManager(); break;
+    case 'topicForm': root.innerHTML = modalTopicForm(state.modal.topicId); break;
+    case 'confirm': root.innerHTML = modalConfirm(state.modal.message, state.modal.confirmLabel); break;
+    default: root.innerHTML = '';
+  }
+}
+
+/* ============================= SYNC DE DRAFT (formulário de tópico) ============================= */
+
+function syncTopicDraftFromDom() {
+  const form = document.getElementById('topic-form');
+  if (!form || !state.modal || !state.modal.draft) return;
+  const draft = state.modal.draft;
+  draft.name = form.querySelector('[name="name"]').value;
+  const rows = form.querySelectorAll('.field-row');
+  const domFields = [];
+  rows.forEach(row => {
+    const id = row.getAttribute('data-field-id');
+    const label = row.querySelector('.field-label-input').value;
+    domFields.push({ id, label });
+  });
+  draft.fields = domFields;
+}
+
+/* ============================= AÇÕES ============================= */
+
+function openModal(modal) { state.modal = modal; renderModal(); }
+function closeModal() { state.modal = null; renderModal(); }
+
+function handleAction(action, target) {
+  switch (action) {
+    case 'logo-tap': {
+      state.logoTapCount++;
+      clearTimeout(state.logoTapTimer);
+      state.logoTapTimer = setTimeout(() => { state.logoTapCount = 0; }, 1800);
+      if (state.logoTapCount >= 5) {
+        state.logoTapCount = 0;
+        openModal({
+          type: 'confirm',
+          message: 'Isso vai apagar permanentemente todos os tópicos e itens salvos neste navegador. Deseja continuar?',
+          confirmLabel: 'Apagar tudo',
+          onConfirm: () => resetAllData(),
+        });
+      }
+      return;
+    }
+    case 'open-topic':
+      state.currentTopicId = target.dataset.id;
+      state.view = 'topic';
+      render();
+      return;
+    case 'back-home':
+      state.view = 'home';
+      state.currentTopicId = null;
+      render();
+      return;
+    case 'open-topics-manager':
+      openModal({ type: 'topicsManager' });
+      return;
+    case 'close-modal':
+      closeModal();
+      return;
+    case 'open-item':
+      openModal({ type: 'itemDetail', itemId: target.dataset.id });
+      return;
+    case 'open-item-form-new':
+      openModal({ type: 'itemForm', topicId: target.dataset.topicId, itemId: null });
+      return;
+    case 'open-item-form-edit': {
+      const item = getItem(target.dataset.id);
+      openModal({ type: 'itemForm', topicId: item.topicId, itemId: item.id });
+      return;
+    }
+    case 'delete-item': {
+      const id = target.dataset.id;
+      openModal({
+        type: 'confirm',
+        message: 'Excluir este item? Essa ação não pode ser desfeita.',
+        confirmLabel: 'Excluir',
+        onConfirm: () => {
+          state.data.items = state.data.items.filter(i => i.id !== id);
+          persist();
+          closeModal();
+          render();
+          showToast('Item excluído.', 'success');
+        }
+      });
+      return;
+    }
+    case 'open-topic-form-new':
+      openModal({ type: 'topicForm', topicId: null });
+      return;
+    case 'open-topic-form-edit':
+      openModal({ type: 'topicForm', topicId: target.dataset.id });
+      return;
+    case 'delete-topic': {
+      const id = target.dataset.id;
+      const topic = getTopic(id);
+      const count = getItemsForTopic(id).length;
+      openModal({
+        type: 'confirm',
+        message: `Excluir o tópico "${escapeHtml(topic.name)}"? ${count > 0 ? 'Isso também vai apagar ' + count + ' item(ns) dentro dele. ' : ''}Essa ação não pode ser desfeita.`,
+        confirmLabel: 'Excluir tópico',
+        onConfirm: () => {
+          state.data.topics = state.data.topics.filter(t => t.id !== id);
+          state.data.items = state.data.items.filter(i => i.topicId !== id);
+          if (state.currentTopicId === id) { state.view = 'home'; state.currentTopicId = null; }
+          persist();
+          openModal({ type: 'topicsManager' });
+          render();
+          showToast('Tópico excluído.', 'success');
+        }
+      });
+      return;
+    }
+    case 'select-icon': {
+      if (!state.modal || !state.modal.draft) return;
+      syncTopicDraftFromDom();
+      state.modal.draft.icon = target.dataset.icon;
+      document.getElementById('modal-root').innerHTML = renderTopicFormModal(state.modal.draft, !!state.modal.topicId);
+      return;
+    }
+    case 'add-field-row': {
+      if (!state.modal || !state.modal.draft) return;
+      syncTopicDraftFromDom();
+      state.modal.draft.fields.push({ id: uid('f'), label: '' });
+      document.getElementById('modal-root').innerHTML = renderTopicFormModal(state.modal.draft, !!state.modal.topicId);
+      return;
+    }
+    case 'remove-field-row': {
+      if (!state.modal || !state.modal.draft) return;
+      syncTopicDraftFromDom();
+      const fid = target.dataset.fieldId;
+      state.modal.draft.fields = state.modal.draft.fields.filter(f => f.id !== fid);
+      document.getElementById('modal-root').innerHTML = renderTopicFormModal(state.modal.draft, !!state.modal.topicId);
+      return;
+    }
+    case 'confirm-yes': {
+      const cb = state.modal && state.modal.onConfirm;
+      if (cb) cb();
+      return;
+    }
+    case 'confirm-no':
+      closeModal();
+      return;
+  }
+}
+
+/* ============================= SUBMISSÃO DE FORMULÁRIOS ============================= */
+
+function handleSubmit(e) {
+  if (e.target.id === 'item-form') {
+    e.preventDefault();
+    const form = e.target;
+    const topicId = form.dataset.topicId;
+    const itemId = form.dataset.itemId || null;
+    const topic = getTopic(topicId);
+    const title = form.querySelector('[name="title"]').value.trim();
+    if (!title) return;
+    const values = {};
+    topic.fields.forEach(f => {
+      const el = form.querySelector(`[name="field_${f.id}"]`);
+      values[f.id] = el ? el.value : '';
+    });
+    if (itemId) {
+      const item = getItem(itemId);
+      item.title = title;
+      item.values = values;
+    } else {
+      state.data.items.push({ id: uid('i'), topicId, title, values });
+    }
+    const ok = persist();
+    closeModal();
+    render();
+    if (ok) showToast(itemId ? 'Item atualizado.' : 'Item criado.', 'success');
+    return;
+  }
+
+  if (e.target.id === 'topic-form') {
+    e.preventDefault();
+    syncTopicDraftFromDom();
+    const draft = state.modal.draft;
+    const name = draft.name.trim();
+    if (!name) return;
+    const fields = draft.fields
+      .map(f => ({ id: f.id, label: (f.label || '').trim() || 'Campo' }));
+    if (fields.length === 0) fields.push({ id: uid('f'), label: 'Descrição' });
+
+    if (draft.id) {
+      const topic = getTopic(draft.id);
+      topic.name = name;
+      topic.icon = draft.icon;
+      topic.fields = fields;
+    } else {
+      state.data.topics.push({ id: uid('topic'), name, icon: draft.icon, fields });
+    }
+    const ok = persist();
+    openModal({ type: 'topicsManager' });
+    render();
+    if (ok) showToast(draft.id ? 'Tópico atualizado.' : 'Tópico criado.', 'success');
+    return;
+  }
+}
+
+/* ============================= DELEGAÇÃO DE EVENTOS ============================= */
+
+document.addEventListener('click', (e) => {
+  const target = e.target.closest('[data-action]');
+  if (!target) return;
+  handleAction(target.dataset.action, target);
+});
+
+document.addEventListener('submit', handleSubmit);
+
+/* ============================= INICIALIZAÇÃO ============================= */
+
+render();
+</script>
+</body>
+</html>
